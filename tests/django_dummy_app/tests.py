@@ -218,6 +218,66 @@ class ArticleTestCase(TransactionTestCase):
         article_document = ArticleDocument.get(id=article.id)
         self.assertEqual(len(article_document.doc.authors), 0)
 
+    def test_article_creation_with_authors_and_keywords(self):
+        with atomic():
+            source = Source.objects.create(domain="example.com", name="example.com")
+            author1 = Author.objects.create(first_name="John", last_name="Doe")
+            author2 = Author.objects.create(first_name="Jane", last_name="Smith")
+            article = Article.objects.create(url="https://example.com", source=source)
+            article.authors.add(author1, author2)
+            ArticleKeyword.objects.create(article=article, keyword="test")
+            ArticleKeyword.objects.create(article=article, keyword="example")
+
+        article_document = ArticleDocument.get(id=article.id)
+        self.assertEqual(len(article_document.doc.authors), 2)
+        self.assertEqual(len(article_document.doc.keywords), 2)
+
+    def test_delete_author_with_articles(self):
+        with atomic():
+            source = Source.objects.create(domain="example.com", name="example.com")
+            author = Author.objects.create(first_name="John", last_name="Doe")
+            article1 = Article.objects.create(url="https://example.com/1", source=source)
+            article2 = Article.objects.create(url="https://example.com/2", source=source)
+            article1.authors.add(author)
+            article2.authors.add(author)
+
+        author.delete()
+        self.assertEqual(ArticleDocument.search().execute().hits.total.value, 2)
+        article_document1 = ArticleDocument.get(id=article1.id)
+        article_document2 = ArticleDocument.get(id=article2.id)
+        self.assertEqual(len(article_document1.doc.authors), 0)
+        self.assertEqual(len(article_document2.doc.authors), 0)
+
+    def test_update_author_with_multiple_articles(self):
+        with atomic():
+            source = Source.objects.create(domain="example.com", name="example.com")
+            author = Author.objects.create(first_name="John", last_name="Doe")
+            article1 = Article.objects.create(url="https://example.com/1", source=source)
+            article2 = Article.objects.create(url="https://example.com/2", source=source)
+            article1.authors.add(author)
+            article2.authors.add(author)
+
+        with atomic():
+            author.first_name = "Jane"
+            author.save(update_fields=["first_name"])
+
+        article_document1 = ArticleDocument.get(id=article1.id)
+        article_document2 = ArticleDocument.get(id=article2.id)
+        self.assertEqual(article_document1.doc.authors[0].first_name, "Jane")
+        self.assertEqual(article_document2.doc.authors[0].first_name, "Jane")
+
+    def test_snippet_update(self):
+        with atomic():
+            source = Source.objects.create(domain="example.com", name="example.com")
+            article = Article.objects.create(url="https://example.com", source=source, snippet="Initial snippet")
+
+        with atomic():
+            article.snippet = "Updated snippet"
+            article.save(update_fields=["snippet"])
+
+        article_document = ArticleDocument.get(id=article.id)
+        self.assertEqual(article_document.doc.snippet, "Updated snippet")
+
     def test_batch_author_creation(self):
         with atomic():
             source = Source.objects.create(domain="example.com", name="example.com")
