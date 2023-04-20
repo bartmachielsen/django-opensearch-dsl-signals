@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "django-opensearch-dsl-signals"
-version = "0.0.1"
+version = "0.0.2"
 description = "Extension to django opensearch dsl with improved signals"
 authors = ["Bart Machielsen <bartmachielsen@gmail.com>"]
 license = "MIT"

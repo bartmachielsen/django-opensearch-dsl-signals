@@ -2,7 +2,7 @@ from typing import Union
 
 from django_opensearch_dsl import Document, fields
 from django_opensearch_dsl.registries import registry
-from tests.django_dummy_app.models import Article, Source
+from tests.django_dummy_app.models import Article, Source, ArticleKeyword, Author
 
 
 @registry.register_document
@@ -14,6 +14,14 @@ class ArticleDocument(Document):
         "name": fields.TextField()
     })
 
+    keywords = fields.NestedField(properties={
+        "keyword": fields.TextField()
+    })
+    authors = fields.NestedField(properties={
+        "first_name": fields.KeywordField(),
+        "last_name": fields.KeywordField()
+    })
+
     class Django:
         model = Article
         fields = [
@@ -22,7 +30,9 @@ class ArticleDocument(Document):
             "snippet"
         ]
         related_models = [
-            Source
+            Source,
+            ArticleKeyword,
+            Author
         ]
 
     class Index:

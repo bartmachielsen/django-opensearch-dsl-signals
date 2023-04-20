@@ -3,7 +3,10 @@
 import logging
 from enum import Enum
 from typing import List, Optional, Dict, Type, Union
+
+from django.conf import settings
 from django.db import models, transaction, connection
+from django.db.models import Field, ManyToManyField
 from django.dispatch import Signal
 from django_opensearch_dsl import Document
 from django_opensearch_dsl.registries import registry
@@ -42,16 +45,16 @@ class DocumentSignalProcessor:
         actions = self._prepare_actions()
 
         for document_class, document_actions in actions.items():
-            document_class().bulk(document_actions)
+            document_class().bulk(document_actions, refresh=getattr(settings, "DJANGO_OPENSEARCH_DSL_SIGNALS_REFRESH", None))
 
         self.pending_updates.clear()
 
     def check_pending_updates_expired(self):
         """Check and clear expired pending updates."""
         if (
-                not connection.run_on_commit and
-                not connection.savepoint_ids
-                and self.pending_updates
+            not connection.run_on_commit and
+            not connection.savepoint_ids
+            and self.pending_updates
         ):
             logger.debug("Clearing pending updates")
             self.pending_updates.clear()
@@ -81,7 +84,7 @@ class DocumentSignalProcessor:
 
         self.check_pending_updates_expired()
 
-        update_fields = list(update_fields) if update_fields else []
+        update_fields = list(update_fields) if update_fields else None
 
         instance_key = f"{type(instance).__name__}:{instance.pk}"
         self.pending_updates[instance_key] = (
@@ -99,19 +102,45 @@ class DocumentSignalProcessor:
         )
         self.register_commit_handler()
 
+    def _get_related_many_fields(self, model: Type[models.Model], target_model: Type[models.Model]) -> List[Field]:
+        """Get all related fields relevant."""
+        fields: List[Field] = []
+        for field in model._meta.get_fields():  # noqa
+            if isinstance(field, ManyToManyField):
+                if field.model == target_model:
+                    fields.append(field)
+        return fields
+
+    def _get_related_fields(self, model: Type[models.Model], target_model: Type[models.Model]) -> List[Field]:
+        """Get all related fields relevant."""
+        fields: List[Field] = []
+        for field in model._meta.get_fields():  # noqa
+            if hasattr(field, "related_model"):
+                if field.related_model == target_model:
+                    fields.append(field)
+        return fields
+
     def handle_save(self, sender: Type[models.Model], instance: models.Model, created: bool, update_fields: Optional[List[str]] = None, **kwargs):
         """Handle save signal for model instances."""
         self.update_instance(instance, update_fields, created, **kwargs)
 
         for doc in registry._get_related_doc(instance): # noqa
             # Loop all fields in instance, check if they are related to the document
-            for field in type(instance)._meta.get_fields():  # noqa
-                if not hasattr(field, "related_model"):
+            for field in self._get_related_fields(sender, doc.Django.model):  # noqa
+                related_field_value = getattr(instance, field.name, None)
+
+                if not related_field_value and hasattr(field, "get_accessor_name"):
+                    related_field_value = getattr(instance, field.get_accessor_name(), None)
+
+                if not related_field_value:
+                    logger.warning(f"Failed to get related field value for {field} on {instance}")
                     continue
 
-                if field.related_model == doc.Django.model:
-                    for related in getattr(instance, field.name).all():
-                        self.update_instance(related, [field.name], created, **kwargs)
+                if isinstance(related_field_value, models.Model):
+                    self.update_instance(related_field_value, [field.remote_field.name], created, **kwargs)
+                elif hasattr(related_field_value, "all"):
+                    for related in related_field_value.all():
+                        self.update_instance(related, [field.remote_field.name], created=False, **kwargs)
 
     def handle_delete(self, sender: Type[models.Model], instance: models.Model, **kwargs):
         """Handle delete signal for model instances."""
@@ -120,6 +149,28 @@ class DocumentSignalProcessor:
 
         document = self.get_instance_document(instance)
         if not document:
+            for doc in registry._get_related_doc(instance):  # noqa
+                # Loop all fields in instance, check if they are related to the document
+                for field in self._get_related_fields(sender, doc.Django.model):  # noqa
+                    related_field_value = getattr(instance, field.name, None)
+
+                    if not related_field_value and hasattr(field, "get_accessor_name"):
+                        related_field_value = getattr(instance, field.get_accessor_name(), None)
+
+                    if not related_field_value:
+                        logger.warning(f"Failed to get related field value for {field} on {instance}")
+                        continue
+
+                    if isinstance(related_field_value, models.Model):
+                        related_name = field._related_name # noqa
+                        self.update_instance(related_field_value, update_fields=[related_name], created=False, **kwargs)
+                    else:
+                        if hasattr(field, "on_delete") and getattr(field, "on_delete") == models.CASCADE:
+                            continue
+
+                        if hasattr(related_field_value, "all"):
+                            for related in related_field_value.all():
+                                self.update_instance(related, update_fields=None, created=False, **kwargs)
             return
 
         self.check_pending_updates_expired()
@@ -156,7 +207,7 @@ class DocumentSignalProcessor:
     def handle_m2m_changed(self, sender: Type[models.Model], instance: models.Model, action: str, **kwargs):
         """Handle many-to-many field change signals."""
         if action in ("post_add", "post_remove", "post_clear"):
-            self.handle_save(sender, instance, **kwargs)
+            self.handle_save(sender, instance, created=False, **kwargs)
 
     def _prepare_actions(self) -> Dict[Type[Document], List[Dict]]:
         """Prepare actions for bulk indexing."""
@@ -252,6 +303,3 @@ class DocumentSignalProcessor:
             "_id": document_instance.generate_id(instance),
             "doc": prepared_update,
         }
-
-
-post_index = Signal()

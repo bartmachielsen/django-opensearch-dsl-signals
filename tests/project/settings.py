@@ -10,9 +10,12 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 import logging
+import warnings
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
+from urllib3.exceptions import InsecureRequestWarning
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -140,6 +143,9 @@ OPENSEARCH_DSL = {
         ],
     }
 }
+# Required for testing, as we have to wait for it to be changed otherwise
+# tests will fail (old data).
+DJANGO_OPENSEARCH_DSL_SIGNALS_REFRESH = "wait_for"
 
 # Logger information
 LOGGING = {
@@ -175,4 +181,9 @@ LOGGING = {
         },
     },
 }
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("opensearch").setLevel(logging.WARNING)
+
+# Disable InsecureRequestWarning
+warnings.simplefilter('ignore', InsecureRequestWarning)
+warnings.simplefilter('ignore', category=UserWarning)
